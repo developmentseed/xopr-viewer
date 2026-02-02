@@ -1,0 +1,32 @@
+[project]
+name = "xopr-viewer"
+version = "0.1.0"
+description = "View and pick groundling lines"
+readme = "README.md"
+authors = [
+    { name = "Max Jones", email = "14077947+maxrjones@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "hvplot>=0.12.2",
+    "jupyter-bokeh>=4.0.5",
+    "pandas>=2.0,<3.0",
+]
+
+[project.optional-dependencies]
+xopr = ["xopr>=0.3.0"]
+
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
+    "pooch>=1.9.0",
+    "pyinstrument>=5.1.2",
+    "pytest>=8.0.0",
+]
+
+[tool.ruff]
+extend-include = ["*.ipynb"]
