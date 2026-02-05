@@ -15,6 +15,7 @@ from xopr_viewer.picker import (
     GroundingLinePicker,
     _create_image,
     _create_layer_curves,
+    _create_slope_curves,
 )
 
 
@@ -65,9 +66,10 @@ class PickAccessor:
         layers: dict[str, xr.Dataset] | None = None,
         width: int = 900,
         height: int = 500,
+        slope_height: int = 150,
         **image_opts: Any,
     ) -> pn.Row:
-        """Create interactive Panel layout with picker and layer overlays."""
+        """Create interactive Panel layout with picker, layer overlays, and slope subplot."""
         picker = self.picker(layers=layers, **image_opts)
         base_plot = picker.element(width=width, height=height)
 
@@ -77,6 +79,18 @@ class PickAccessor:
                 name="Layers", options=layer_names, value=layer_names
             )
             snap_checkbox = pn.widgets.Checkbox(name="Snap to layer", value=False)
+
+            slope_checkboxes = pn.widgets.CheckBoxGroup(
+                name="Slope Layers", options=layer_names, value=[]
+            )
+            smoothing_slider = pn.widgets.IntSlider(
+                name="Smoothing Window",
+                start=1,
+                end=51,
+                step=2,
+                value=1,
+                width=180,
+            )
 
             # Update snap settings when checkboxes change
             def update_snap(event):
@@ -93,22 +107,57 @@ class PickAccessor:
                 curves = _create_layer_curves(layers, value)
                 return hv.Overlay(list(curves.values()))
 
-            plot = pn.pane.HoloViews(
+            # Get a sample slow_time value to type the empty curve axis
+            _sample_layer = next(iter(layers.values()))
+            _empty_x = _sample_layer.slow_time.values[:1]
+
+            def slope_overlay(visible_slopes, smoothing_window):
+                if not visible_slopes:
+                    return hv.Curve(
+                        (_empty_x, [float("nan")]),
+                        kdims=["slow_time"],
+                        vdims=["twtt"],
+                    ).opts(
+                        width=width,
+                        height=slope_height,
+                        title="Layer Slope",
+                        ylabel="Slope (\u00b5s/trace)",
+                    )
+                curves = _create_slope_curves(layers, visible_slopes, smoothing_window)
+                return hv.Overlay(list(curves.values())).opts(
+                    width=width,
+                    height=slope_height,
+                    title="Layer Slope",
+                    ylabel="Slope (\u00b5s/trace)",
+                )
+
+            echogram_pane = pn.pane.HoloViews(
                 base_plot * hv.DynamicMap(layer_overlay),
                 width=width,
                 height=height,
+                sizing_mode="fixed",
+            )
+            slope_pane = pn.pane.HoloViews(
+                pn.bind(slope_overlay, slope_checkboxes, smoothing_slider),
+                width=width,
+                height=slope_height,
                 sizing_mode="fixed",
             )
             sidebar = pn.Column(
                 pn.pane.Markdown("### Layers"),
                 layer_checkboxes,
                 snap_checkbox,
+                pn.layout.Divider(),
+                pn.pane.Markdown("### Slope"),
+                slope_checkboxes,
+                smoothing_slider,
                 width=200,
             )
         else:
-            plot = pn.pane.HoloViews(
+            echogram_pane = pn.pane.HoloViews(
                 base_plot, width=width, height=height, sizing_mode="fixed"
             )
+            slope_pane = None
             sidebar = pn.Column(width=200)
 
         @pn.depends(picker.param.points)
@@ -129,7 +178,13 @@ class PickAccessor:
         controls = pn.Row(
             point_count, pn.Spacer(), undo_btn, clear_btn, export_input, export_btn
         )
-        main = pn.Column(plot, controls, sizing_mode="fixed", width=width)
+
+        main_children = [echogram_pane]
+        if slope_pane is not None:
+            main_children.append(slope_pane)
+        main_children.append(controls)
+
+        main = pn.Column(*main_children, sizing_mode="fixed", width=width)
 
         return pn.Row(sidebar, main)
 

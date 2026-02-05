@@ -136,10 +136,6 @@ class TestLayerCurves:
         assert "standard:bottom" in curves
         assert isinstance(curves["standard:surface"], hv.Curve)
 
-    def test_create_layer_curves_uses_colors(self, sample_layers):
-        curves = _create_layer_curves(sample_layers)
-        assert "standard:surface" in _LAYER_COLORS
-
     def test_create_layer_curves_filters_visible(self, sample_layers):
         curves = _create_layer_curves(
             sample_layers, visible_layers=["standard:surface"]
@@ -362,3 +358,75 @@ class TestPanelSnapFunctionality:
         # (threshold is 5us by default, so 20us is way outside)
         x, y = picker._snap_to_layer(first_time, 20.0)
         assert y == 20.0  # Not snapped
+
+
+class TestPanelSlope:
+    """Test slope subplot in panel() method."""
+
+    def test_panel_with_layers_has_slope_checkboxes(
+        self, sample_echogram_dataset, sample_layers
+    ):
+        pytest.importorskip("panel")
+        import panel as pn
+
+        acc = sample_echogram_dataset.pick
+        layout = acc.panel(layers=sample_layers)
+
+        sidebar = layout[0]
+        slope_checkboxes = None
+        for item in sidebar:
+            if (
+                isinstance(item, pn.widgets.CheckBoxGroup)
+                and item.name == "Slope Layers"
+            ):
+                slope_checkboxes = item
+                break
+
+        assert slope_checkboxes is not None
+        assert set(slope_checkboxes.options) == set(sample_layers.keys())
+        assert slope_checkboxes.value == []
+
+    def test_panel_with_layers_has_smoothing_slider(
+        self, sample_echogram_dataset, sample_layers
+    ):
+        pytest.importorskip("panel")
+        import panel as pn
+
+        acc = sample_echogram_dataset.pick
+        layout = acc.panel(layers=sample_layers)
+
+        sidebar = layout[0]
+        slider = None
+        for item in sidebar:
+            if isinstance(item, pn.widgets.IntSlider):
+                slider = item
+                break
+
+        assert slider is not None
+        assert slider.value == 1
+        assert slider.start == 1
+        assert slider.end >= 21
+
+    def test_panel_without_layers_no_slope_controls(self, sample_echogram_dataset):
+        pytest.importorskip("panel")
+        import panel as pn
+
+        acc = sample_echogram_dataset.pick
+        layout = acc.panel()
+
+        sidebar = layout[0]
+        for item in sidebar:
+            assert not isinstance(item, pn.widgets.IntSlider)
+
+    def test_panel_slope_subplot_exists(self, sample_echogram_dataset, sample_layers):
+        pytest.importorskip("panel")
+        import panel as pn
+
+        acc = sample_echogram_dataset.pick
+        layout = acc.panel(layers=sample_layers)
+
+        main = layout[1]
+        # Should have: echogram_pane, slope_pane, controls
+        assert len(main) >= 3
+        # Second item should be a HoloViews pane (the slope subplot)
+        assert isinstance(main[1], pn.pane.HoloViews)

@@ -8,7 +8,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from xopr_viewer.picker import GroundingLinePicker, pick_echogram
+from xopr_viewer.picker import (
+    GroundingLinePicker,
+    compute_layer_slope,
+    _create_slope_curves,
+    pick_echogram,
+)
 
 # Load bokeh extension for tests that use .opts()
 hv.extension("bokeh")
@@ -394,3 +399,100 @@ class TestSnapToLayer:
         # (and 20us is outside threshold from surface at 8us)
         x, y = picker._snap_to_layer(0, 20.0)
         assert y == 20.0  # Not snapped
+
+
+class TestComputeLayerSlope:
+    """Test compute_layer_slope function."""
+
+    @staticmethod
+    def _make_da(values):
+        """Helper to create an xarray DataArray from numpy values."""
+        import xarray as xr
+
+        return xr.DataArray(
+            values, dims=["trace"], coords={"trace": np.arange(len(values))}
+        )
+
+    def test_flat_layer_zero_slope(self):
+        twtt = self._make_da(np.ones(100) * 8e-6)
+        slope = compute_layer_slope(twtt, smoothing_window=1)
+        np.testing.assert_allclose(slope.values, 0.0, atol=1e-10)
+
+    def test_linear_layer_constant_slope(self):
+        twtt = self._make_da(np.linspace(25e-6, 30e-6, 100))
+        slope = compute_layer_slope(twtt, smoothing_window=1)
+        expected = 5e-6 / 99  # seconds per trace
+        np.testing.assert_allclose(slope.values[1:-1], expected, rtol=1e-3)
+
+    def test_smoothing_reduces_noise(self):
+        np.random.seed(42)
+        twtt = self._make_da(np.ones(100) * 8e-6 + np.random.normal(0, 0.1e-6, 100))
+        slope_raw = compute_layer_slope(twtt, smoothing_window=1)
+        slope_smooth = compute_layer_slope(twtt, smoothing_window=11)
+        assert np.nanstd(slope_smooth.values) < np.nanstd(slope_raw.values)
+
+    def test_smoothing_window_1_is_no_smoothing(self):
+        twtt = self._make_da(np.linspace(0, 10e-6, 50))
+        slope = compute_layer_slope(twtt, smoothing_window=1)
+        # differentiate gives d(twtt)/d(trace), same as np.gradient
+        expected = np.gradient(np.linspace(0, 10e-6, 50))
+        np.testing.assert_allclose(slope.values, expected)
+
+    def test_output_length_matches_input(self):
+        for n in [2, 10, 100]:
+            twtt = self._make_da(np.ones(n) * 8e-6)
+            slope = compute_layer_slope(twtt, smoothing_window=1)
+            assert len(slope) == n
+
+    def test_large_smoothing_window_clamped(self):
+        twtt = self._make_da(np.ones(5) * 8e-6)
+        slope = compute_layer_slope(twtt, smoothing_window=99)
+        assert len(slope) == 5
+
+    def test_returns_dataarray(self):
+        import xarray as xr
+
+        twtt = self._make_da(np.linspace(0, 10e-6, 50))
+        slope = compute_layer_slope(twtt, smoothing_window=1)
+        assert isinstance(slope, xr.DataArray)
+
+
+class TestCreateSlopeCurves:
+    """Test _create_slope_curves function."""
+
+    def test_creates_curves_for_all_layers(self, sample_layers):
+        curves = _create_slope_curves(sample_layers)
+        assert len(curves) == 2
+        assert "standard:surface" in curves
+        assert "standard:bottom" in curves
+
+    def test_filters_by_visible_layers(self, sample_layers):
+        curves = _create_slope_curves(
+            sample_layers, visible_layers=["standard:surface"]
+        )
+        assert len(curves) == 1
+        assert "standard:surface" in curves
+
+    def test_empty_visible_layers_returns_empty(self, sample_layers):
+        curves = _create_slope_curves(sample_layers, visible_layers=[])
+        assert len(curves) == 0
+
+    def test_curves_use_slow_time_kdim(self, sample_layers):
+        curves = _create_slope_curves(sample_layers)
+        for curve in curves.values():
+            assert "slow_time" in [d.name for d in curve.kdims]
+
+    def test_curves_use_twtt_vdim(self, sample_layers):
+        curves = _create_slope_curves(sample_layers)
+        for curve in curves.values():
+            assert "twtt" in [d.name for d in curve.vdims]
+
+    def test_smoothing_window_applied(self, sample_layers):
+        curves_1 = _create_slope_curves(sample_layers, smoothing_window=1)
+        curves_11 = _create_slope_curves(sample_layers, smoothing_window=11)
+        assert curves_1.keys() == curves_11.keys()
+
+    def test_returns_holoviews_curves(self, sample_layers):
+        curves = _create_slope_curves(sample_layers)
+        for curve in curves.values():
+            assert isinstance(curve, hv.Curve)

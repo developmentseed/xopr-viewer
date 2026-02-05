@@ -123,6 +123,115 @@ def _create_layer_curves(
     return curves
 
 
+def compute_layer_slope(
+    twtt: xr.DataArray,
+    smoothing_window: int = 1,
+) -> xr.DataArray:
+    """Compute slope of a layer profile after smoothing.
+
+    Smoothing uses ``xr.DataArray.rolling`` with a centered uniform
+    (box-car) window followed by ``.mean()``.  Every output point is the
+    unweighted mean of the ``smoothing_window`` nearest input points.
+    The window is centered so the smoothed value at index *i* averages
+    indices ``i - window//2 … i + window//2``.
+
+    Points within ``window // 2`` of either edge have fewer neighbors,
+    so ``rolling().mean()`` returns NaN there.  These NaN edges propagate
+    through the derivative and appear as gaps at the ends of the slope
+    curve.
+
+    The derivative is computed by ``xr.DataArray.differentiate``, which
+    uses second-order central finite differences in the interior and
+    first-order one-sided differences at the boundaries.  Because it
+    operates on coordinate values (not integer indices), the result is in
+    physical units: ``d(twtt) / d(coordinate)``.  For datetime coordinates
+    like ``slow_time`` the denominator is in nanoseconds (NumPy's internal
+    representation), giving slope in seconds per nanosecond.
+
+    Developer notes — common customizations:
+
+    * **Weighted smoothing** — Replace ``rolling().mean()`` with a
+      Gaussian kernel (``scipy.ndimage.gaussian_filter1d``) or a
+      Savitzky–Golay filter (``scipy.signal.savgol_filter``) to better
+      preserve sharp features.  Both require scipy.
+    * **Edge handling** — Pass ``min_periods=1`` to ``rolling()`` to get
+      biased shorter-window estimates near boundaries instead of NaN gaps.
+    * **Units** — For datetime coordinates, multiply by ``1e9`` to convert
+      from seconds/nanosecond to dimensionless seconds/second, or convert
+      the coordinate to elapsed seconds before calling this function.
+
+    Parameters
+    ----------
+    twtt : xr.DataArray
+        Two-way travel time values in seconds, indexed by a single dimension.
+    smoothing_window : int
+        Size of the rolling mean window for smoothing (1 = no smoothing).
+
+    Returns
+    -------
+    xr.DataArray
+        Slope as d(twtt)/d(coordinate) along the first dimension.
+    """
+    dim = twtt.dims[0]
+    smoothing_window = max(1, min(smoothing_window, len(twtt)))
+
+    if smoothing_window > 1:
+        smoothed = twtt.rolling({dim: smoothing_window}, center=True).mean()
+    else:
+        smoothed = twtt
+
+    return smoothed.differentiate(dim)
+
+
+def _create_slope_curves(
+    layers: dict[str, xr.Dataset],
+    visible_layers: list[str] | None = None,
+    smoothing_window: int = 1,
+) -> dict[str, hv.Curve]:
+    """Create HoloViews Curve elements for layer slopes.
+
+    Parameters
+    ----------
+    layers : dict[str, xr.Dataset]
+        Layer datasets, each with 'twtt' variable and 'slow_time' coordinate.
+    visible_layers : list[str] | None
+        Layer names to include, or None for all.
+    smoothing_window : int
+        Rolling mean window size for smoothing before gradient.
+
+    Returns
+    -------
+    dict[str, hv.Curve]
+        Mapping of layer name to slope Curve element.
+    """
+    curves = {}
+
+    for name, layer_ds in layers.items():
+        if visible_layers is not None and name not in visible_layers:
+            continue
+
+        if "twtt" not in layer_ds:
+            continue
+
+        slope = compute_layer_slope(layer_ds.twtt, smoothing_window)
+        dim = slope.dims[0]
+
+        color = _LAYER_COLORS.get(name, _DEFAULT_LAYER_COLOR)
+
+        curves[name] = hv.Curve(
+            slope,
+            kdims=[dim],
+            vdims=["twtt"],
+            label=f"{name} slope",
+        ).opts(
+            color=color,
+            line_width=2,
+            alpha=0.8,
+        )
+
+    return curves
+
+
 class GroundingLinePicker(param.Parameterized):
     """
     Interactive point picker for echogram annotation.
