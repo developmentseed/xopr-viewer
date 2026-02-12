@@ -470,6 +470,57 @@ class TestPanel:
         assert x_select.name == "X axis"
         assert y_select.name == "Y axis"
 
+    @pytest.mark.parametrize("to_x", ["rangeline", "along_track"])
+    def test_panel_switch_from_gps_time_no_dtype_error(
+        self, sample_echogram_dataset, to_x
+    ):
+        """Switching x-mode from gps_time must not raise UFuncNoLoopError.
+
+        Reproduces a bug where Panel's link_axes preprocessor compares
+        datetime64 axis bounds (from the old gps_time plot) with float
+        bounds (from the new numeric-axis plot), triggering:
+
+            numpy._core._exceptions._UFuncNoLoopError:
+            ufunc 'greater' did not contain a loop with signature matching
+            types (DateTime64DType, _PyFloatDType) -> None
+
+        In production this fires inside Panel's server-side _update_pane
+        → _preprocess → link_axes path.  In tests we call link_axes
+        directly on the root after replacing the pane object to trigger
+        the same comparison.
+        """
+        pytest.importorskip("panel")
+        import panel as pn
+        from bokeh.io import curdoc
+        from panel.pane.holoviews import link_axes
+
+        ds = sample_echogram_dataset
+
+        # Build initial gps_time overlay (datetime x-axis)
+        image_gps = _create_image(ds, x_mode="gps_time")
+        picker = GroundingLinePicker(image_gps, ds=ds, x_mode="gps_time", y_mode="twtt")
+        pts_gps = picker._points_element([])
+        overlay_gps = (image_gps * pts_gps).opts(width=400, height=300)
+
+        pane = pn.pane.HoloViews(
+            overlay_gps, width=400, height=300, sizing_mode="fixed"
+        )
+        doc = curdoc()
+        root = pane.get_root(doc)
+
+        # Switch to numeric x-mode and update the pane object.
+        picker.set_axis_modes(to_x, "twtt")
+        image_new = _create_image(ds, x_mode=to_x)
+        pts_new = picker._points_element([])
+        overlay_new = (image_new * pts_new).opts(width=400, height=300)
+        pane.object = overlay_new
+
+        # Re-run link_axes on the root — this is the preprocessor hook
+        # that Panel calls during _update_object in production.  It
+        # compares axis.start > axis.end on the Bokeh Range1d, which
+        # fails when datetime64 and float types are mixed.
+        link_axes(pane, root)
+
     def test_panel_renders_without_layers(self, sample_echogram_dataset):
         """Panel overlay DynamicMaps initialize without error."""
         pytest.importorskip("panel")

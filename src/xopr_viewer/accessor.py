@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import holoviews as hv
+import numpy as np
 import panel as pn
 import xarray as xr
 
+from xopr_viewer.coordinates import _along_track_km
 from xopr_viewer.picker import (
     GroundingLinePicker,
     _create_image,
@@ -109,11 +111,72 @@ class PickAccessor:
             layers=layers,
         )
 
+        # --- View-limit preservation state ---
+        # Tracks the RangeXY stream and previous modes so that
+        # make_echogram can convert axis limits across mode switches,
+        # mirroring OPR's xaxisPM_callback behaviour.
+        _view: dict = {"stream": None, "x_mode": "gps_time", "y_mode": "twtt"}
+
+        def _x_to_frac_index(x_val: float, x_mode: str) -> float:
+            """Map a display x-value to a fractional index into ds.slow_time."""
+            st = ds.slow_time.values
+            fi = np.arange(len(st), dtype=float)
+            if x_mode == "rangeline":
+                return float(x_val)
+            if x_mode == "gps_time":
+                # RangeXY reports datetime axes as ms-since-epoch
+                st_ms = st.astype("datetime64[ms]").astype(np.int64).astype(float)
+                return float(np.interp(x_val, st_ms, fi))
+            if x_mode == "along_track":
+                return float(np.interp(x_val, _along_track_km(ds), fi))
+            return float(x_val)
+
+        def _frac_index_to_x(idx: float, x_mode: str):
+            """Map a fractional index into ds.slow_time to a display x-value."""
+            st = ds.slow_time.values
+            fi = np.arange(len(st), dtype=float)
+            if x_mode == "rangeline":
+                return idx
+            if x_mode == "gps_time":
+                st_ms = st.astype("datetime64[ms]").astype(np.int64).astype(float)
+                return np.datetime64(int(np.interp(idx, fi, st_ms)), "ms")
+            if x_mode == "along_track":
+                return float(np.interp(idx, fi, _along_track_km(ds)))
+            return idx
+
         # --- Echogram overlay builder ---
         # Uses pn.bind instead of DynamicMap streams so that the entire
         # Bokeh plot is rebuilt when axis modes change (Bokeh cannot
         # switch between DatetimeAxis and LinearAxis on the same plot).
         def make_echogram(x_mode, y_mode, visible_layers=None):
+            # --- Capture and convert view limits ---
+            xlim = ylim = None
+            old_stream = _view["stream"]
+            if old_stream is not None:
+                old_xr = old_stream.x_range
+                old_yr = old_stream.y_range
+
+                # Convert x-limits through fractional index (like OPR's
+                # interp1(image_xaxis, image_gps_time, cur_axis) pattern).
+                if old_xr is not None and old_xr[0] is not None:
+                    old_xm = _view["x_mode"]
+                    fi_lo = _x_to_frac_index(old_xr[0], old_xm)
+                    fi_hi = _x_to_frac_index(old_xr[1], old_xm)
+                    xlim = (
+                        _frac_index_to_x(fi_lo, x_mode),
+                        _frac_index_to_x(fi_hi, x_mode),
+                    )
+
+                # Preserve y-limits only when y-mode is unchanged;
+                # reset to full range on y-mode switch (like OPR's
+                # yaxisPM_callback passing -inf/inf).
+                if (
+                    _view["y_mode"] == y_mode
+                    and old_yr is not None
+                    and old_yr[0] is not None
+                ):
+                    ylim = (old_yr[0], old_yr[1])
+
             picker.set_axis_modes(x_mode, y_mode, _notify=False)
 
             image = _create_image(ds, x_mode=x_mode, y_mode=y_mode, **image_opts)
@@ -138,7 +201,23 @@ class PickAccessor:
                 ).values():
                     overlay = overlay * curve
 
-            return overlay.opts(width=width, height=height, framewise=True)
+            overlay_opts: dict = {
+                "width": width,
+                "height": height,
+                "framewise": True,
+            }
+            if xlim is not None:
+                overlay_opts["xlim"] = xlim
+            if ylim is not None:
+                overlay_opts["ylim"] = ylim
+            overlay = overlay.opts(**overlay_opts)
+
+            # Track view for next mode change
+            _view["stream"] = hv.streams.RangeXY(source=overlay)
+            _view["x_mode"] = x_mode
+            _view["y_mode"] = y_mode
+
+            return overlay
 
         # --- Layer overlays and slope ---
         if layers:
