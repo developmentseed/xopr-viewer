@@ -6,6 +6,7 @@ Inspired by CReSIS imb.picker MATLAB tool.
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
@@ -128,6 +129,16 @@ def _create_image(
     """
     if data_var not in ds:
         raise ValueError(f"Data variable '{data_var}' not found")
+
+    _MAX_ELEMENTS = 10_000_000
+    n_elements = ds[data_var].size
+    if n_elements > _MAX_ELEMENTS:
+        warnings.warn(
+            f"Array has {n_elements:,} elements ({n_elements / 1e6:.1f}M), "
+            f"which exceeds the recommended limit of {_MAX_ELEMENTS / 1e6:.0f}M "
+            f"for interactive rendering. Consider slicing or downsampling before plotting.",
+            stacklevel=2,
+        )
 
     # --- Y-axis transform (before x, regridding replaces twtt dim) ---
     if y_mode in ("elevation", "surface_flat"):
