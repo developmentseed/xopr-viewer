@@ -37,7 +37,8 @@ hv.extension("bokeh")
 frame = xopr.open_frame("path/to/radar/data")
 
 # Create interactive picker using the xarray accessor
-frame.pick.show(layers=frame.xopr.layers())
+layers = xopr.get_layers(frame)
+frame.pick.show(layers=layers)
 ```
 
 ### Using the picker directly

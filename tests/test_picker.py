@@ -21,7 +21,7 @@ hv.extension("bokeh")
 
 @pytest.fixture
 def picker(sample_image):
-    """Create a picker instance."""
+    """Create a picker instance (no dataset — legacy mode)."""
     return GroundingLinePicker(sample_image)
 
 
@@ -52,8 +52,8 @@ class TestPointOperations:
     def test_on_tap_adds_point(self, picker):
         picker._on_tap(10.0, 20.0)
         assert len(picker.points) == 1
-        assert picker.points[0]["trace"] == 10.0
-        assert picker.points[0]["twtt_us"] == 20.0
+        assert picker.points[0]["slow_time"] == 10.0
+        assert picker.points[0]["twtt"] == 20.0
         assert "id" in picker.points[0]
 
     def test_on_tap_ignores_none(self, picker):
@@ -77,7 +77,7 @@ class TestPointOperations:
         picker._on_tap(3.0, 4.0)
         picker.undo()
         assert len(picker.points) == 1
-        assert picker.points[0]["trace"] == 1.0
+        assert picker.points[0]["slow_time"] == 1.0
 
     def test_undo_on_empty_is_safe(self, picker):
         picker.undo()  # Should not raise
@@ -95,7 +95,7 @@ class TestPointOperations:
         point_id = picker.points[0]["id"]
         picker.delete_by_id(point_id)
         assert len(picker.points) == 1
-        assert picker.points[0]["trace"] == 3.0
+        assert picker.points[0]["slow_time"] == 3.0
 
     def test_delete_by_id_nonexistent(self, picker):
         picker._on_tap(1.0, 2.0)
@@ -111,24 +111,25 @@ class TestDataFrame:
         assert isinstance(df, pd.DataFrame)
         assert len(df) == 0
         assert "id" in df.columns
-        assert "trace" in df.columns
-        assert "twtt_us" in df.columns
+        assert "slow_time" in df.columns
+        assert "twtt" in df.columns
 
     def test_df_with_points(self, picker):
         picker._on_tap(1.0, 2.0)
         picker._on_tap(3.0, 4.0)
         df = picker.df
         assert len(df) == 2
-        assert df["trace"].tolist() == [1.0, 3.0]
-        assert df["twtt_us"].tolist() == [2.0, 4.0]
+        assert df["slow_time"].tolist() == [1.0, 3.0]
+        assert df["twtt"].tolist() == [2.0, 4.0]
 
-    def test_df_uses_correct_dim_names(self):
+    def test_df_always_uses_canonical_columns(self):
+        """DataFrame always returns canonical columns regardless of image dims."""
         image = hv.Image(np.random.rand(10, 10), kdims=["distance", "depth"])
         picker = GroundingLinePicker(image)
         picker._on_tap(5.0, 10.0)
         df = picker.df
-        assert "distance" in df.columns
-        assert "depth" in df.columns
+        assert "slow_time" in df.columns
+        assert "twtt" in df.columns
 
 
 class TestCSVExportImport:
@@ -144,16 +145,16 @@ class TestCSVExportImport:
         picker.to_csv(path)
         df = pd.read_csv(path)
         assert len(df) == 2
-        assert df["trace"].tolist() == [1.0, 3.0]
+        assert df["slow_time"].tolist() == [1.0, 3.0]
         Path(path).unlink()
 
     def test_from_csv(self, picker):
-        # Create a CSV file
+        # Create a CSV file with canonical columns
         df = pd.DataFrame(
             {
                 "id": ["abc", "def"],
-                "trace": [10.0, 20.0],
-                "twtt_us": [30.0, 40.0],
+                "slow_time": [10.0, 20.0],
+                "twtt": [30.0, 40.0],
             }
         )
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
@@ -162,8 +163,8 @@ class TestCSVExportImport:
 
         picker.from_csv(path)
         assert len(picker.points) == 2
-        assert picker.points[0]["trace"] == 10.0
-        assert picker.points[1]["twtt_us"] == 40.0
+        assert picker.points[0]["slow_time"] == 10.0
+        assert picker.points[1]["twtt"] == 40.0
         Path(path).unlink()
 
     def test_roundtrip(self, picker):
@@ -196,7 +197,7 @@ class TestHoloViewsElements:
         assert len(points) == 0
 
     def test_points_element_with_data(self, picker):
-        data = [{"id": "a", "trace": 1.0, "twtt_us": 2.0}]
+        data = [{"id": "a", "slow_time": 1.0, "twtt": 2.0}]
         points = picker._points_element(data)
         assert isinstance(points, hv.Points)
         assert len(points) == 1
@@ -250,24 +251,28 @@ class TestPanelIntegration:
 
 
 class TestSnapToLayer:
-    """Test snap-to-layer functionality in GroundingLinePicker."""
+    """Test snap-to-layer functionality in GroundingLinePicker.
+
+    Snap operates in canonical coordinates (slow_time, twtt in seconds).
+    Threshold comparison is done in microseconds.
+    """
 
     @pytest.fixture
     def numeric_layers(self):
-        """Create layer data with numeric x coordinates for testing."""
+        """Create layer data with numeric slow_time coordinate for testing."""
         import xarray as xr
 
         n_traces = 100
-        x_values = np.arange(n_traces, dtype=float)
+        slow_time_values = np.arange(n_traces, dtype=float)
 
         surface_ds = xr.Dataset(
-            {"twtt": (["trace"], np.ones(n_traces) * 8e-6)},  # 8 microseconds
-            coords={"trace": x_values},
+            {"twtt": (["slow_time"], np.ones(n_traces) * 8e-6)},
+            coords={"slow_time": slow_time_values},
         )
 
         bottom_ds = xr.Dataset(
-            {"twtt": (["trace"], np.linspace(25e-6, 30e-6, n_traces))},  # 25-30 us
-            coords={"trace": x_values},
+            {"twtt": (["slow_time"], np.linspace(25e-6, 30e-6, n_traces))},
+            coords={"slow_time": slow_time_values},
         )
 
         return {
@@ -280,125 +285,122 @@ class TestSnapToLayer:
     ):
         """Test that points within threshold snap to nearest layer."""
         picker = GroundingLinePicker(
-            sample_image, layers=numeric_layers, snap_threshold=5.0, x_coord="trace"
+            sample_image, layers=numeric_layers, snap_threshold=5.0
         )
         picker.snap_enabled = True
 
-        # Surface layer is at 8 microseconds (8e-6 * 1e6 = 8)
-        # Test a point close to surface
-        x, y = picker._snap_to_layer(0, 9.0)  # 1 us away from surface (8us)
-        assert y == pytest.approx(8.0, rel=1e-3)
+        # Surface at 8e-6 s; point at 9e-6 s → 1 µs away, within 5 µs threshold
+        x, y = picker._snap_to_layer(0, 9e-6)
+        assert y == pytest.approx(8e-6, rel=1e-3)
 
     def test_does_not_snap_outside_threshold(self, sample_image, numeric_layers):
         """Test that points outside threshold are not snapped."""
         picker = GroundingLinePicker(
-            sample_image, layers=numeric_layers, snap_threshold=5.0, x_coord="trace"
+            sample_image, layers=numeric_layers, snap_threshold=5.0
         )
         picker.snap_enabled = True
 
-        # Surface is at 8us, bottom starts at 25us
-        # 16us is far from both layers
-        x, y = picker._snap_to_layer(0, 16.0)
-        assert y == 16.0  # Should not snap
+        # Surface at 8e-6 s, bottom starts at 25e-6 s
+        # 16e-6 s is 8 µs from surface, 9 µs from bottom — both outside 5 µs
+        x, y = picker._snap_to_layer(0, 16e-6)
+        assert y == 16e-6  # Should not snap
 
     def test_snaps_to_closer_layer(self, sample_image, numeric_layers):
         """Test that it snaps to the closest layer when multiple are in range."""
         picker = GroundingLinePicker(
-            sample_image, layers=numeric_layers, snap_threshold=10.0, x_coord="trace"
+            sample_image, layers=numeric_layers, snap_threshold=10.0
         )
         picker.snap_enabled = True
 
-        # Surface at 8us, bottom at ~25us at trace 0
-        # Test point at 10us - closer to surface (2us away) than bottom (15us away)
-        x, y = picker._snap_to_layer(0, 10.0)
-        assert y == pytest.approx(8.0, rel=1e-3)
+        # Surface at 8e-6 s, bottom at ~25e-6 s at trace 0
+        # Point at 10e-6 s → 2 µs from surface, 15 µs from bottom
+        x, y = picker._snap_to_layer(0, 10e-6)
+        assert y == pytest.approx(8e-6, rel=1e-3)
 
     def test_empty_layers_returns_original(self, sample_image):
         """Test that empty layers dict returns original coordinates."""
         picker = GroundingLinePicker(sample_image, layers={})
         picker.snap_enabled = True
 
-        x, y = picker._snap_to_layer(10.0, 20.0)
+        x, y = picker._snap_to_layer(10.0, 20e-6)
         assert x == 10.0
-        assert y == 20.0
+        assert y == 20e-6
 
     def test_x_coordinate_unchanged(self, sample_image, numeric_layers):
         """Test that x coordinate is never modified."""
         picker = GroundingLinePicker(
-            sample_image, layers=numeric_layers, snap_threshold=5.0, x_coord="trace"
+            sample_image, layers=numeric_layers, snap_threshold=5.0
         )
         picker.snap_enabled = True
 
-        x, y = picker._snap_to_layer(42.0, 9.0)
+        x, y = picker._snap_to_layer(42.0, 9e-6)
         assert x == 42.0
 
     def test_custom_threshold(self, sample_image, numeric_layers):
         """Test that custom threshold is respected."""
-        # With small threshold, should not snap
+        # With small threshold (0.5 µs), 1 µs away should not snap
         picker_small = GroundingLinePicker(
-            sample_image, layers=numeric_layers, snap_threshold=0.5, x_coord="trace"
+            sample_image, layers=numeric_layers, snap_threshold=0.5
         )
-        x, y = picker_small._snap_to_layer(0, 9.0)  # 1us away from surface
-        assert y == 9.0  # Should not snap (outside 0.5us threshold)
+        x, y = picker_small._snap_to_layer(0, 9e-6)
+        assert y == 9e-6  # Should not snap (1 µs > 0.5 µs threshold)
 
-        # With larger threshold, should snap
+        # With larger threshold (2 µs), 1 µs away should snap
         picker_large = GroundingLinePicker(
-            sample_image, layers=numeric_layers, snap_threshold=2.0, x_coord="trace"
+            sample_image, layers=numeric_layers, snap_threshold=2.0
         )
-        x, y = picker_large._snap_to_layer(0, 9.0)
-        assert y == pytest.approx(8.0, rel=1e-3)  # Should snap
+        x, y = picker_large._snap_to_layer(0, 9e-6)
+        assert y == pytest.approx(8e-6, rel=1e-3)  # Should snap
 
     def test_works_with_datetime_coordinates(self, sample_image, sample_layers):
         """Test that snapping works with datetime64 coordinates."""
-        # sample_layers uses datetime64 for slow_time coordinate
         picker = GroundingLinePicker(
-            sample_image, layers=sample_layers, snap_threshold=5.0, x_coord="slow_time"
+            sample_image, layers=sample_layers, snap_threshold=5.0
         )
         picker.snap_enabled = True
 
-        # Get a valid datetime value from the layer to use as x
+        # Get a valid datetime value from the layer
         first_time = sample_layers["standard:surface"].slow_time.values[0]
 
-        # Surface layer is at 8 microseconds
-        x, y = picker._snap_to_layer(first_time, 9.0)  # 1 us away from surface
-        assert y == pytest.approx(8.0, rel=1e-3)
+        # Surface layer at 8e-6 s; point at 9e-6 s → 1 µs away
+        x, y = picker._snap_to_layer(first_time, 9e-6)
+        assert y == pytest.approx(8e-6, rel=1e-3)
 
     def test_snap_enabled_controls_snapping(self, sample_image, numeric_layers):
         """Test that snap_enabled controls whether snapping occurs."""
         picker = GroundingLinePicker(
-            sample_image, layers=numeric_layers, snap_threshold=5.0, x_coord="trace"
+            sample_image, layers=numeric_layers, snap_threshold=5.0
         )
 
         # Snap disabled by default
         assert picker.snap_enabled is False
-        picker._on_tap(0, 9.0)
-        assert picker.points[0]["twtt_us"] == 9.0  # Not snapped
+        picker._on_tap(0, 9e-6)
+        assert picker.points[0]["twtt"] == 9e-6  # Not snapped
 
         picker.clear()
 
         # Enable snap
         picker.snap_enabled = True
-        picker._on_tap(0, 9.0)
-        assert picker.points[0]["twtt_us"] == pytest.approx(8.0, rel=1e-3)  # Snapped
+        picker._on_tap(0, 9e-6)
+        assert picker.points[0]["twtt"] == pytest.approx(8e-6, rel=1e-3)  # Snapped
 
     def test_visible_layers_filters_snap_targets(self, sample_image, numeric_layers):
         """Test that visible_layers controls which layers are used for snapping."""
         picker = GroundingLinePicker(
-            sample_image, layers=numeric_layers, snap_threshold=5.0, x_coord="trace"
+            sample_image, layers=numeric_layers, snap_threshold=5.0
         )
         picker.snap_enabled = True
 
         # Only snap to surface layer
         picker.visible_layers = ["surface"]
 
-        # Surface is at 8us - should snap
-        x, y = picker._snap_to_layer(0, 9.0)
-        assert y == pytest.approx(8.0, rel=1e-3)
+        # Surface at 8e-6 s — should snap
+        x, y = picker._snap_to_layer(0, 9e-6)
+        assert y == pytest.approx(8e-6, rel=1e-3)
 
-        # Bottom is at 25us - should NOT snap since it's not visible
-        # (and 20us is outside threshold from surface at 8us)
-        x, y = picker._snap_to_layer(0, 20.0)
-        assert y == 20.0  # Not snapped
+        # Bottom at 25e-6 s — NOT visible, and 20e-6 is 12 µs from surface
+        x, y = picker._snap_to_layer(0, 20e-6)
+        assert y == 20e-6  # Not snapped
 
 
 class TestComputeLayerSlope:
