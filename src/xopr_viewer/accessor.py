@@ -9,7 +9,7 @@ import numpy as np
 import panel as pn
 import xarray as xr
 
-from xopr_viewer.coordinates import _along_track_km
+from xopr_viewer.coordinates import X_DIM_NAMES, _along_track_km, canonical_to_display
 from xopr_viewer.picker import (
     GroundingLinePicker,
     _create_image,
@@ -249,13 +249,21 @@ class PickAccessor:
             layer_checkboxes.param.watch(update_snap, "value")
 
             _sample_layer = next(iter(layers.values()))
-            _empty_x = _sample_layer.slow_time.values[:1]
 
-            def slope_overlay(visible_slopes, smoothing_window):
+            def _empty_slope_x(x_mode):
+                """Return a single-element x array for the empty slope curve."""
+                st = _sample_layer.slow_time.values[:1]
+                if x_mode == "gps_time":
+                    return st
+                dx, _ = canonical_to_display(st[0], 0.0, ds, x_mode, "twtt")
+                return np.array([dx])
+
+            def slope_overlay(x_mode, visible_slopes, smoothing_window):
+                x_dim = X_DIM_NAMES.get(x_mode, "slow_time")
                 if not visible_slopes:
                     return hv.Curve(
-                        (_empty_x, [float("nan")]),
-                        kdims=["slow_time"],
+                        (_empty_slope_x(x_mode), [float("nan")]),
+                        kdims=[x_dim],
                         vdims=["twtt"],
                     ).opts(
                         width=width,
@@ -263,7 +271,13 @@ class PickAccessor:
                         title="Layer Slope",
                         ylabel="Slope (\u00b5s/trace)",
                     )
-                curves = _create_slope_curves(layers, visible_slopes, smoothing_window)
+                curves = _create_slope_curves(
+                    layers,
+                    visible_slopes,
+                    smoothing_window,
+                    ds=ds,
+                    x_mode=x_mode,
+                )
                 return hv.Overlay(list(curves.values())).opts(
                     width=width,
                     height=slope_height,
@@ -276,12 +290,19 @@ class PickAccessor:
                 width=width,
                 height=height,
                 sizing_mode="fixed",
+                linked_axes=False,
             )
             slope_pane = pn.pane.HoloViews(
-                pn.bind(slope_overlay, slope_checkboxes, smoothing_slider),
+                pn.bind(
+                    slope_overlay,
+                    x_mode_select,
+                    slope_checkboxes,
+                    smoothing_slider,
+                ),
                 width=width,
                 height=slope_height,
                 sizing_mode="fixed",
+                linked_axes=False,
             )
             layer_sidebar = [
                 pn.pane.Markdown("### Layers"),
@@ -298,6 +319,7 @@ class PickAccessor:
                 width=width,
                 height=height,
                 sizing_mode="fixed",
+                linked_axes=False,
             )
             slope_pane = None
             layer_sidebar = []

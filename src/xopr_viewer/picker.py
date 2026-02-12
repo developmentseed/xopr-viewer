@@ -331,6 +331,8 @@ def _create_slope_curves(
     layers: dict[str, xr.Dataset],
     visible_layers: list[str] | None = None,
     smoothing_window: int = 1,
+    ds: xr.Dataset | None = None,
+    x_mode: str = "gps_time",
 ) -> dict[str, hv.Curve]:
     """Create HoloViews Curve elements for layer slopes.
 
@@ -342,6 +344,11 @@ def _create_slope_curves(
         Layer names to include, or None for all.
     smoothing_window : int
         Rolling mean window size for smoothing before gradient.
+    ds : xr.Dataset, optional
+        Echogram dataset (needed for x-coordinate conversion when
+        *x_mode* is not ``"gps_time"``).
+    x_mode : str
+        X-axis display mode (default ``"gps_time"``).
 
     Returns
     -------
@@ -349,6 +356,7 @@ def _create_slope_curves(
         Mapping of layer name to slope Curve element.
     """
     curves = {}
+    x_dim = X_DIM_NAMES.get(x_mode, "slow_time")
 
     for name, layer_ds in layers.items():
         if visible_layers is not None and name not in visible_layers:
@@ -358,13 +366,28 @@ def _create_slope_curves(
             continue
 
         slope = compute_layer_slope(layer_ds.twtt, smoothing_window)
-        dim = slope.dims[0]
+        slope_values = slope.values
+
+        if "slow_time" in layer_ds.coords:
+            slow_times = layer_ds.slow_time.values
+        else:
+            slow_times = np.arange(len(slope_values))
+
+        # Convert x-coordinates to match the current display mode
+        if ds is not None and x_mode != "gps_time":
+            x_vals: list[Any] = []
+            for st in slow_times:
+                dx, _ = canonical_to_display(st, 0.0, ds, x_mode, "twtt")
+                x_vals.append(dx)
+            x_values = np.array(x_vals)
+        else:
+            x_values = slow_times
 
         color = _LAYER_COLORS.get(name, _DEFAULT_LAYER_COLOR)
 
         curves[name] = hv.Curve(
-            slope,
-            kdims=[dim],
+            (x_values, slope_values),
+            kdims=[x_dim],
             vdims=["twtt"],
             label=f"{name} slope",
         ).opts(
