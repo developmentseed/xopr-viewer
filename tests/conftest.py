@@ -81,3 +81,35 @@ def sample_layers():
         "standard:surface": surface_ds,
         "standard:bottom": bottom_ds,
     }
+
+
+@pytest.fixture
+def nonuniform_echogram_dataset():
+    """Create a dataset with intentionally non-uniform slow_time spacing."""
+    np.random.seed(0)
+    n_traces = 100
+    n_samples = 50
+
+    # Non-uniform gaps: base 1-second spacing with random jitter up to +2s
+    base_time = np.datetime64("2023-01-09T12:00:00")
+    intervals_ns = 1_000_000_000 + np.random.randint(
+        0, 2_000_000_000, size=n_traces - 1
+    )
+    cumulative = np.concatenate([[0], np.cumsum(intervals_ns)])
+    slow_time = base_time + cumulative.astype("timedelta64[ns]")
+
+    twtt = np.linspace(0, 50e-6, n_samples)
+    data = np.random.rand(n_samples, n_traces) * 1e-6
+
+    ds = xr.Dataset(
+        {
+            "Data": (["twtt", "slow_time"], data),
+            "Latitude": (["slow_time"], np.linspace(-75.0, -74.9, n_traces)),
+            "Longitude": (["slow_time"], np.linspace(102.0, 102.5, n_traces)),
+            "Elevation": (["slow_time"], np.linspace(1500, 1520, n_traces)),
+            "Surface": (["slow_time"], np.ones(n_traces) * 8e-6),
+        },
+        coords={"slow_time": slow_time, "twtt": twtt},
+        attrs={"granule": "nonuniform_test"},
+    )
+    return ds

@@ -1,6 +1,7 @@
 """Tests for the PickAccessor xarray accessor."""
 
 import holoviews as hv
+import numpy as np
 import pytest
 
 # Import accessor to register it
@@ -11,6 +12,7 @@ from xopr_viewer.picker import (
     _create_image,
     _create_layer_curves,
     _get_title,
+    _interpolate_uniform,
     _LAYER_COLORS,
 )
 
@@ -49,6 +51,250 @@ class TestCreateImage:
     def test_create_image_linear_scale(self, sample_echogram_dataset):
         image = _create_image(sample_echogram_dataset, log_scale=False)
         assert isinstance(image, hv.Image)
+
+
+class TestAxisModes:
+    """Test axis mode handling in _create_image."""
+
+    def test_gps_time_produces_uniform_output(self, nonuniform_echogram_dataset):
+        """x_mode='gps_time' interpolates non-uniform slow_time to uniform grid."""
+        image = _create_image(
+            nonuniform_echogram_dataset, x_mode="gps_time", log_scale=False
+        )
+        coords = image.dimension_values("slow_time", expanded=False)
+        diffs = np.diff(coords.astype("datetime64[ns]").astype(np.int64))
+        np.testing.assert_allclose(diffs, diffs[0], rtol=1e-6)
+
+    def test_rangeline_no_interpolation(self, nonuniform_echogram_dataset):
+        """x_mode='rangeline' produces integer trace dim with no interpolation."""
+        image = _create_image(
+            nonuniform_echogram_dataset, x_mode="rangeline", log_scale=False
+        )
+        traces = image.dimension_values("trace", expanded=False)
+        # Trace count matches original
+        assert len(traces) == len(nonuniform_echogram_dataset.slow_time)
+        # Integer indices
+        np.testing.assert_array_equal(traces, np.arange(len(traces)))
+
+    def test_range_bin_mode(self, sample_echogram_dataset):
+        """y_mode='range_bin' produces integer range_bin dim."""
+        image = _create_image(
+            sample_echogram_dataset, y_mode="range_bin", log_scale=False
+        )
+        bins = image.dimension_values("range_bin", expanded=False)
+        np.testing.assert_array_equal(bins, np.arange(len(bins)))
+
+    def test_range_mode(self, sample_echogram_dataset):
+        """y_mode='range' produces range_m dim scaled from twtt."""
+        import scipy.constants
+
+        image = _create_image(sample_echogram_dataset, y_mode="range", log_scale=False)
+        range_m = image.dimension_values("range_m", expanded=False)
+        expected = sample_echogram_dataset.twtt.values * scipy.constants.c / 2.0
+        np.testing.assert_allclose(range_m, expected, rtol=1e-6)
+
+    def test_interpolate_uniform_numeric(self):
+        """_interpolate_uniform handles numeric coordinates."""
+        import xarray as xr
+
+        # Non-uniform x: [0, 1, 3, 6, 10]
+        x = np.array([0.0, 1.0, 3.0, 6.0, 10.0])
+        da = xr.DataArray(np.arange(5.0), dims=["x"], coords={"x": x})
+        result = _interpolate_uniform(da, "x")
+        result_diffs = np.diff(result.coords["x"].values)
+        np.testing.assert_allclose(result_diffs, result_diffs[0], rtol=1e-6)
+
+    def test_interpolate_uniform_short_array_noop(self):
+        """Arrays with fewer than 3 points are returned unchanged."""
+        import xarray as xr
+
+        x = np.array([0.0, 5.0])
+        da = xr.DataArray(np.arange(2.0), dims=["x"], coords={"x": x})
+        result = _interpolate_uniform(da, "x")
+        np.testing.assert_array_equal(result.values, da.values)
+
+    def test_interpolate_uniform_non_monotonic_raises(self):
+        """Non-monotonic coordinates raise ValueError."""
+        import xarray as xr
+
+        x = np.array([10.0, 5.0, 1.0])  # decreasing
+        da = xr.DataArray(np.arange(3.0), dims=["x"], coords={"x": x})
+        with pytest.raises(ValueError, match="not monotonically increasing"):
+            _interpolate_uniform(da, "x")
+
+
+_X_MODES = ["rangeline", "gps_time", "along_track"]
+_Y_MODES = ["twtt", "range_bin", "range", "elevation", "surface_flat"]
+_EXPECTED_X_DIM = {
+    "rangeline": "trace",
+    "gps_time": "slow_time",
+    "along_track": "along_track_km",
+}
+_EXPECTED_Y_DIM = {
+    "twtt": "twtt_us",
+    "range_bin": "range_bin",
+    "range": "range_m",
+    "elevation": "elevation_m",
+    "surface_flat": "depth_m",
+}
+_X_TRANSITIONS = [(a, b) for a in _X_MODES for b in _X_MODES if a != b]
+_Y_TRANSITIONS = [(a, b) for a in _Y_MODES for b in _Y_MODES if a != b]
+
+
+class TestAllAxisModeCombinations:
+    """Test _create_image for every x_mode × y_mode combination (3 × 5 = 15)."""
+
+    @pytest.mark.parametrize("x_mode", _X_MODES)
+    @pytest.mark.parametrize("y_mode", _Y_MODES)
+    def test_create_image_returns_image(self, sample_echogram_dataset, x_mode, y_mode):
+        """_create_image succeeds for every axis mode combination."""
+        image = _create_image(
+            sample_echogram_dataset, x_mode=x_mode, y_mode=y_mode, log_scale=False
+        )
+        assert isinstance(image, hv.Image)
+
+    @pytest.mark.parametrize("x_mode", _X_MODES)
+    @pytest.mark.parametrize("y_mode", _Y_MODES)
+    def test_kdims_names(self, sample_echogram_dataset, x_mode, y_mode):
+        """Image kdims match the expected display dimension names."""
+        image = _create_image(
+            sample_echogram_dataset, x_mode=x_mode, y_mode=y_mode, log_scale=False
+        )
+        kdim_names = [d.name for d in image.kdims]
+        assert kdim_names[0] == _EXPECTED_X_DIM[x_mode]
+        assert kdim_names[1] == _EXPECTED_Y_DIM[y_mode]
+
+    @pytest.mark.parametrize("x_mode", _X_MODES)
+    @pytest.mark.parametrize("y_mode", _Y_MODES)
+    def test_image_has_data(self, sample_echogram_dataset, x_mode, y_mode):
+        """Image contains non-empty data for every combination."""
+        image = _create_image(
+            sample_echogram_dataset, x_mode=x_mode, y_mode=y_mode, log_scale=False
+        )
+        assert image.dimension_values("power_dB").size > 0
+
+
+class TestAxisModeSwitching:
+    """Test switching between axis modes — simulates dropdown changes."""
+
+    # -- X-mode transitions --
+
+    @pytest.mark.parametrize("from_mode,to_mode", _X_TRANSITIONS)
+    def test_switch_x_mode_updates_dims(
+        self, sample_echogram_dataset, from_mode, to_mode
+    ):
+        """set_axis_modes updates x_dim when x-mode changes."""
+        image = _create_image(sample_echogram_dataset, x_mode=from_mode)
+        picker = GroundingLinePicker(
+            image, ds=sample_echogram_dataset, x_mode=from_mode, y_mode="twtt"
+        )
+        assert picker.x_dim == _EXPECTED_X_DIM[from_mode]
+
+        picker.set_axis_modes(to_mode, "twtt")
+        assert picker.x_dim == _EXPECTED_X_DIM[to_mode]
+        assert picker.y_dim == _EXPECTED_Y_DIM["twtt"]
+
+    # -- Y-mode transitions --
+
+    @pytest.mark.parametrize("from_mode,to_mode", _Y_TRANSITIONS)
+    def test_switch_y_mode_updates_dims(
+        self, sample_echogram_dataset, from_mode, to_mode
+    ):
+        """set_axis_modes updates y_dim when y-mode changes."""
+        image = _create_image(sample_echogram_dataset, y_mode=from_mode)
+        picker = GroundingLinePicker(
+            image, ds=sample_echogram_dataset, x_mode="gps_time", y_mode=from_mode
+        )
+        assert picker.y_dim == _EXPECTED_Y_DIM[from_mode]
+
+        picker.set_axis_modes("gps_time", to_mode)
+        assert picker.y_dim == _EXPECTED_Y_DIM[to_mode]
+        assert picker.x_dim == _EXPECTED_X_DIM["gps_time"]
+
+    # -- Points survive mode switches --
+
+    @pytest.mark.parametrize("from_x,to_x", _X_TRANSITIONS)
+    def test_points_survive_x_mode_switch(self, sample_echogram_dataset, from_x, to_x):
+        """Points picked in one x-mode render without error after switching."""
+        from xopr_viewer.coordinates import canonical_to_display
+
+        ds = sample_echogram_dataset
+        image = _create_image(ds, x_mode=from_x)
+        picker = GroundingLinePicker(image, ds=ds, x_mode=from_x, y_mode="twtt")
+
+        # Pick a point (tap in display coords of from_x mode)
+        slow_time = ds["slow_time"].values[10]
+        twtt_s = 20e-6
+        dx, dy = canonical_to_display(slow_time, twtt_s, ds, from_x, "twtt")
+        picker._on_tap(dx, dy)
+        assert len(picker.points) == 1
+
+        # Canonical storage is independent of display mode
+        assert "slow_time" in picker.points[0]
+        assert "twtt" in picker.points[0]
+
+        # Switch x-mode and render points
+        picker.set_axis_modes(to_x, "twtt")
+        pts = picker._points_element(picker.points)
+        assert isinstance(pts, hv.Points)
+        assert pts.data.shape[0] == 1
+        # kdims match the new mode
+        assert pts.kdims[0].name == _EXPECTED_X_DIM[to_x]
+        assert pts.kdims[1].name == _EXPECTED_Y_DIM["twtt"]
+
+    @pytest.mark.parametrize("from_y,to_y", _Y_TRANSITIONS)
+    def test_points_survive_y_mode_switch(self, sample_echogram_dataset, from_y, to_y):
+        """Points picked in one y-mode render without error after switching."""
+        from xopr_viewer.coordinates import canonical_to_display
+
+        ds = sample_echogram_dataset
+        image = _create_image(ds, y_mode=from_y)
+        picker = GroundingLinePicker(image, ds=ds, x_mode="gps_time", y_mode=from_y)
+
+        # Pick a point
+        slow_time = ds["slow_time"].values[10]
+        twtt_s = 20e-6
+        dx, dy = canonical_to_display(slow_time, twtt_s, ds, "gps_time", from_y)
+        picker._on_tap(dx, dy)
+        assert len(picker.points) == 1
+
+        # Switch y-mode and render points
+        picker.set_axis_modes("gps_time", to_y)
+        pts = picker._points_element(picker.points)
+        assert isinstance(pts, hv.Points)
+        assert pts.data.shape[0] == 1
+        assert pts.kdims[0].name == _EXPECTED_X_DIM["gps_time"]
+        assert pts.kdims[1].name == _EXPECTED_Y_DIM[to_y]
+
+    # -- Canonical coordinates unchanged after switch --
+
+    @pytest.mark.parametrize("x_mode", _X_MODES)
+    @pytest.mark.parametrize("y_mode", _Y_MODES)
+    def test_canonical_coords_unchanged_after_switch(
+        self, sample_echogram_dataset, x_mode, y_mode
+    ):
+        """Switching modes doesn't alter the stored canonical coordinates."""
+        from xopr_viewer.coordinates import canonical_to_display
+
+        ds = sample_echogram_dataset
+        image = _create_image(ds, x_mode=x_mode, y_mode=y_mode)
+        picker = GroundingLinePicker(image, ds=ds, x_mode=x_mode, y_mode=y_mode)
+
+        # Pick via display coords
+        slow_time = ds["slow_time"].values[25]
+        twtt_s = 15e-6
+        dx, dy = canonical_to_display(slow_time, twtt_s, ds, x_mode, y_mode)
+        picker._on_tap(dx, dy)
+
+        stored = picker.points[0]
+        original_twtt = stored["twtt"]
+
+        # Switch to a different mode
+        picker.set_axis_modes("rangeline", "range_bin")
+
+        # Canonical values are unchanged
+        assert picker.points[0]["twtt"] == original_twtt
+        assert picker.points[0]["slow_time"] == stored["slow_time"]
 
 
 class TestGetTitle:
@@ -208,6 +454,107 @@ class TestPanel:
         layout = acc.panel(layers=sample_layers)
         assert isinstance(layout, pn.Row)
 
+    def test_panel_has_axis_mode_selectors(self, sample_echogram_dataset):
+        """Panel sidebar includes x-axis and y-axis mode dropdowns."""
+        pytest.importorskip("panel")
+        import panel as pn
+
+        acc = sample_echogram_dataset.pick
+        layout = acc.panel()
+
+        sidebar = layout[0]
+        selects = [item for item in sidebar if isinstance(item, pn.widgets.Select)]
+        assert len(selects) == 2
+        x_select = selects[0]
+        y_select = selects[1]
+        assert x_select.name == "X axis"
+        assert y_select.name == "Y axis"
+
+    def test_panel_renders_without_layers(self, sample_echogram_dataset):
+        """Panel overlay DynamicMaps initialize without error."""
+        pytest.importorskip("panel")
+        from bokeh.io import curdoc
+
+        layout = sample_echogram_dataset.pick.panel()
+        layout.get_root(curdoc())
+
+    def test_panel_renders_with_layers(self, sample_echogram_dataset, sample_layers):
+        """Panel overlay DynamicMaps initialize without error (with layers)."""
+        pytest.importorskip("panel")
+        from bokeh.io import curdoc
+
+        layout = sample_echogram_dataset.pick.panel(layers=sample_layers)
+        layout.get_root(curdoc())
+
+    @pytest.mark.parametrize("from_x,to_x", _X_TRANSITIONS)
+    def test_panel_overlay_renders_after_x_switch(
+        self, sample_echogram_dataset, sample_layers, from_x, to_x
+    ):
+        """Overlay renders without DTypePromotionError after switching x-mode.
+
+        Reproduces the live error: all overlay elements (image, points,
+        layer curves) must use the same x-axis dtype after a mode switch.
+        """
+        ds = sample_echogram_dataset
+        picker = GroundingLinePicker(
+            _create_image(ds, x_mode=from_x),
+            ds=ds,
+            x_mode=from_x,
+            y_mode="twtt",
+            layers=sample_layers,
+        )
+
+        # Render overlay in the initial mode
+        image = _create_image(ds, x_mode=from_x, y_mode="twtt")
+        pts = picker._points_element([])
+        curves = list(
+            _create_layer_curves(
+                sample_layers, ds=ds, x_mode=from_x, y_mode="twtt"
+            ).values()
+        )
+        overlay = image * pts
+        for c in curves:
+            overlay = overlay * c
+        hv.render(overlay.opts(width=400, height=300))
+
+        # Switch mode — all elements must re-render in the new coord system
+        picker.set_axis_modes(to_x, "twtt")
+        image2 = _create_image(ds, x_mode=to_x, y_mode="twtt")
+        pts2 = picker._points_element([])
+        curves2 = list(
+            _create_layer_curves(
+                sample_layers, ds=ds, x_mode=to_x, y_mode="twtt"
+            ).values()
+        )
+        overlay2 = image2 * pts2
+        for c in curves2:
+            overlay2 = overlay2 * c
+        hv.render(overlay2.opts(width=400, height=300))
+
+    @pytest.mark.parametrize("from_y,to_y", _Y_TRANSITIONS)
+    def test_panel_overlay_renders_after_y_switch(
+        self, sample_echogram_dataset, from_y, to_y
+    ):
+        """Overlay renders without DTypePromotionError after switching y-mode."""
+        ds = sample_echogram_dataset
+        picker = GroundingLinePicker(
+            _create_image(ds, y_mode=from_y),
+            ds=ds,
+            x_mode="gps_time",
+            y_mode=from_y,
+        )
+
+        image_from = _create_image(ds, x_mode="gps_time", y_mode=from_y)
+        pts_from = picker._points_element([])
+        overlay = image_from * pts_from
+        hv.render(overlay.opts(width=400, height=300))
+
+        picker.set_axis_modes("gps_time", to_y)
+        image_to = _create_image(ds, x_mode="gps_time", y_mode=to_y)
+        pts_to = picker._points_element([])
+        overlay2 = image_to * pts_to
+        hv.render(overlay2.opts(width=400, height=300))
+
 
 class TestLayerColors:
     """Test layer color constants."""
@@ -350,14 +697,13 @@ class TestPanelSnapFunctionality:
         # Get the first slow_time value for testing
         first_time = sample_layers["standard:surface"].slow_time.values[0]
 
-        # Surface is at 8us, test snapping to it
-        x, y = picker._snap_to_layer(first_time, 9.0)
-        assert y == pytest.approx(8.0, rel=1e-3)
+        # Surface at 8e-6 s; point at 9e-6 s → 1 µs away, within threshold
+        x, y = picker._snap_to_layer(first_time, 9e-6)
+        assert y == pytest.approx(8e-6, rel=1e-3)
 
-        # Bottom is at 25us at start - should NOT snap since it's not in visible
-        # (threshold is 5us by default, so 20us is way outside)
-        x, y = picker._snap_to_layer(first_time, 20.0)
-        assert y == 20.0  # Not snapped
+        # Bottom at 25e-6 s — NOT visible, and 20e-6 is 12 µs from surface
+        x, y = picker._snap_to_layer(first_time, 20e-6)
+        assert y == 20e-6  # Not snapped
 
 
 class TestPanelSlope:
