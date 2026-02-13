@@ -105,14 +105,33 @@ def _get_title(ds: xr.Dataset) -> str:
     return "Echogram"
 
 
+def _warp_colormap(cmap_name: str, hist_eq: float, n: int = 256) -> list[str]:
+    """Apply MATLAB-style power-law histogram equalization to a colormap.
+
+    Warps colormap indices through ``x ** 10**(hist_eq/10)`` and resamples
+    the base colormap at the warped positions.  At *hist_eq* = 0 the power
+    is 1 (identity).
+
+    Returns a list of *n* hex colour strings suitable for Bokeh's ``cmap``
+    option.
+    """
+    import matplotlib as mpl
+
+    cm = mpl.colormaps[cmap_name]
+    t = np.linspace(0, 1, n)
+    power = 10.0 ** (hist_eq / 10.0)
+    warped = t**power
+    return [mpl.colors.rgb2hex(cm(w)) for w in warped]
+
+
 def _create_image(
     ds: xr.Dataset,
     data_var: str = "Data",
     x_mode: str = "gps_time",
     y_mode: str = "twtt",
-    log_scale: bool = True,
-    clim_percentile: tuple[float, float] = (5, 99),
-    cmap: str = "gray",
+    clim: tuple[float, float] | None = None,
+    hist_eq: float = 0.0,
+    cmap: str = "gray_r",
 ) -> hv.Image:
     """Create HoloViews Image from echogram data.
 
@@ -126,6 +145,15 @@ def _create_image(
     y_mode : str
         Y-axis display mode: ``"twtt"``, ``"range_bin"``, ``"range"``,
         ``"elevation"``, or ``"surface_flat"``.
+    clim : tuple, optional
+        Explicit (min, max) colour limits in dB.  *None* (default) uses
+        the finite min/max of the dB-converted data.
+    hist_eq : float
+        Histogram equalization exponent (MATLAB convention, range
+        [-5, 5]).  0 means no warp.
+    cmap : str
+        Matplotlib colormap name.  Default ``"gray_r"`` matches
+        MATLAB OPR's ``1-gray(256)``.
     """
     if data_var not in ds:
         raise ValueError(f"Data variable '{data_var}' not found")
@@ -192,14 +220,19 @@ def _create_image(
                 da = da.swap_dims({"slow_time": "along_track_km"})
                 da = _interpolate_uniform(da, "along_track_km")
 
-    # --- Log scale and clim ---
-    if log_scale:
-        da = cast("xr.DataArray", 10 * np.log10(np.abs(da) + 1e-10))
+    # --- dB conversion and clim ---
+    da = cast("xr.DataArray", 10 * np.log10(np.abs(da)))
 
-    clim = (
-        float(np.nanpercentile(da.values, clim_percentile[0])),
-        float(np.nanpercentile(da.values, clim_percentile[1])),
-    )
+    if clim is None:
+        finite_vals = da.values[np.isfinite(da.values)]
+        if len(finite_vals) > 0:
+            clim = (float(finite_vals.min()), float(finite_vals.max()))
+        else:
+            clim = (-100.0, 0.0)
+
+    palette: str | list[str] = cmap
+    if hist_eq != 0.0:
+        palette = _warp_colormap(cmap, hist_eq)
 
     title = _get_title(ds)
     invert_y = Y_INVERT.get(y_mode, True)
@@ -211,7 +244,7 @@ def _create_image(
     y_dim_name = Y_DIM_NAMES.get(y_mode, "twtt_us")
 
     return hv.Image(da, kdims=[x_dim_name, y_dim_name], vdims=["power_dB"]).opts(
-        cmap=cmap,
+        cmap=palette,
         colorbar=True,
         clim=clim,
         invert_yaxis=invert_y,
@@ -787,7 +820,7 @@ def pick_echogram(
         # Assume xarray DataArray
         image = hv.Image(data, kdims=[x_dim, y_dim])
 
-    default_opts = {"cmap": "gray", "colorbar": True, "tools": ["tap", "hover"]}
+    default_opts = {"cmap": "gray_r", "colorbar": True, "tools": ["tap", "hover"]}
     default_opts.update(opts)
     image = image.opts(**default_opts)
 

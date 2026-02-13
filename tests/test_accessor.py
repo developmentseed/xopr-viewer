@@ -13,6 +13,7 @@ from xopr_viewer.picker import (
     _create_layer_curves,
     _get_title,
     _interpolate_uniform,
+    _warp_colormap,
     _LAYER_COLORS,
 )
 
@@ -44,13 +45,21 @@ class TestCreateImage:
         with pytest.raises(ValueError, match="not found"):
             _create_image(sample_echogram_dataset, data_var="NonExistent")
 
-    def test_create_image_log_scale(self, sample_echogram_dataset):
-        image = _create_image(sample_echogram_dataset, log_scale=True)
-        assert isinstance(image, hv.Image)
+    def test_create_image_default_clim_finite_minmax(self, sample_echogram_dataset):
+        image = _create_image(sample_echogram_dataset)
+        opts = hv.Store.lookup_options("bokeh", image, "plot").kwargs
+        clim = opts.get("clim")
+        assert clim is not None
+        # Default clim should span the finite range of the dB data
+        dB_data = 10 * np.log10(np.abs(sample_echogram_dataset["Data"].values))
+        finite = dB_data[np.isfinite(dB_data)]
+        assert clim[0] == pytest.approx(float(finite.min()))
+        assert clim[1] == pytest.approx(float(finite.max()))
 
-    def test_create_image_linear_scale(self, sample_echogram_dataset):
-        image = _create_image(sample_echogram_dataset, log_scale=False)
-        assert isinstance(image, hv.Image)
+    def test_create_image_explicit_clim(self, sample_echogram_dataset):
+        image = _create_image(sample_echogram_dataset, clim=(-80.0, -20.0))
+        opts = hv.Store.lookup_options("bokeh", image, "plot").kwargs
+        assert opts["clim"] == (-80.0, -20.0)
 
 
 class TestAxisModes:
@@ -58,18 +67,14 @@ class TestAxisModes:
 
     def test_gps_time_produces_uniform_output(self, nonuniform_echogram_dataset):
         """x_mode='gps_time' interpolates non-uniform slow_time to uniform grid."""
-        image = _create_image(
-            nonuniform_echogram_dataset, x_mode="gps_time", log_scale=False
-        )
+        image = _create_image(nonuniform_echogram_dataset, x_mode="gps_time")
         coords = image.dimension_values("slow_time", expanded=False)
         diffs = np.diff(coords.astype("datetime64[ns]").astype(np.int64))
         np.testing.assert_allclose(diffs, diffs[0], rtol=1e-6)
 
     def test_rangeline_no_interpolation(self, nonuniform_echogram_dataset):
         """x_mode='rangeline' produces integer trace dim with no interpolation."""
-        image = _create_image(
-            nonuniform_echogram_dataset, x_mode="rangeline", log_scale=False
-        )
+        image = _create_image(nonuniform_echogram_dataset, x_mode="rangeline")
         traces = image.dimension_values("trace", expanded=False)
         # Trace count matches original
         assert len(traces) == len(nonuniform_echogram_dataset.slow_time)
@@ -78,9 +83,7 @@ class TestAxisModes:
 
     def test_range_bin_mode(self, sample_echogram_dataset):
         """y_mode='range_bin' produces integer range_bin dim."""
-        image = _create_image(
-            sample_echogram_dataset, y_mode="range_bin", log_scale=False
-        )
+        image = _create_image(sample_echogram_dataset, y_mode="range_bin")
         bins = image.dimension_values("range_bin", expanded=False)
         np.testing.assert_array_equal(bins, np.arange(len(bins)))
 
@@ -88,7 +91,7 @@ class TestAxisModes:
         """y_mode='range' produces range_m dim scaled from twtt."""
         import scipy.constants
 
-        image = _create_image(sample_echogram_dataset, y_mode="range", log_scale=False)
+        image = _create_image(sample_echogram_dataset, y_mode="range")
         range_m = image.dimension_values("range_m", expanded=False)
         expected = sample_echogram_dataset.twtt.values * scipy.constants.c / 2.0
         np.testing.assert_allclose(range_m, expected, rtol=1e-6)
@@ -148,18 +151,14 @@ class TestAllAxisModeCombinations:
     @pytest.mark.parametrize("y_mode", _Y_MODES)
     def test_create_image_returns_image(self, sample_echogram_dataset, x_mode, y_mode):
         """_create_image succeeds for every axis mode combination."""
-        image = _create_image(
-            sample_echogram_dataset, x_mode=x_mode, y_mode=y_mode, log_scale=False
-        )
+        image = _create_image(sample_echogram_dataset, x_mode=x_mode, y_mode=y_mode)
         assert isinstance(image, hv.Image)
 
     @pytest.mark.parametrize("x_mode", _X_MODES)
     @pytest.mark.parametrize("y_mode", _Y_MODES)
     def test_kdims_names(self, sample_echogram_dataset, x_mode, y_mode):
         """Image kdims match the expected display dimension names."""
-        image = _create_image(
-            sample_echogram_dataset, x_mode=x_mode, y_mode=y_mode, log_scale=False
-        )
+        image = _create_image(sample_echogram_dataset, x_mode=x_mode, y_mode=y_mode)
         kdim_names = [d.name for d in image.kdims]
         assert kdim_names[0] == _EXPECTED_X_DIM[x_mode]
         assert kdim_names[1] == _EXPECTED_Y_DIM[y_mode]
@@ -168,9 +167,7 @@ class TestAllAxisModeCombinations:
     @pytest.mark.parametrize("y_mode", _Y_MODES)
     def test_image_has_data(self, sample_echogram_dataset, x_mode, y_mode):
         """Image contains non-empty data for every combination."""
-        image = _create_image(
-            sample_echogram_dataset, x_mode=x_mode, y_mode=y_mode, log_scale=False
-        )
+        image = _create_image(sample_echogram_dataset, x_mode=x_mode, y_mode=y_mode)
         assert image.dimension_values("power_dB").size > 0
 
 
@@ -613,6 +610,29 @@ class TestLayerColors:
     def test_layer_colors_defined(self):
         assert "standard:surface" in _LAYER_COLORS
         assert "standard:bottom" in _LAYER_COLORS
+
+
+class TestWarpColormap:
+    """Test MATLAB-style histogram equalization colormap warp."""
+
+    def test_identity_at_zero(self):
+        """hist_eq=0 returns 256 colours matching the base colormap."""
+        palette = _warp_colormap("gray_r", 0.0)
+        assert len(palette) == 256
+        assert all(isinstance(c, str) and c.startswith("#") for c in palette)
+
+    def test_nonzero_differs(self):
+        """hist_eq!=0 produces a different palette than identity."""
+        identity = _warp_colormap("gray_r", 0.0)
+        warped = _warp_colormap("gray_r", 2.0)
+        assert identity != warped
+
+    def test_endpoints_unchanged(self):
+        """First and last colours are the same regardless of hist_eq."""
+        for exp in [-3.0, 0.0, 3.0]:
+            palette = _warp_colormap("gray_r", exp)
+            assert palette[0] == _warp_colormap("gray_r", 0.0)[0]
+            assert palette[-1] == _warp_colormap("gray_r", 0.0)[-1]
 
 
 class TestPanelSnapFunctionality:

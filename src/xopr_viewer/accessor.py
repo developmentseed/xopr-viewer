@@ -183,7 +183,7 @@ class PickAccessor:
             image = image.opts(
                 width=width,
                 height=height,
-                tools=["tap"],
+                tools=["tap", "hover"],
                 active_tools=["tap"],
             )
 
@@ -286,7 +286,12 @@ class PickAccessor:
                 )
 
             echogram_pane = pn.pane.HoloViews(
-                pn.bind(make_echogram, x_mode_select, y_mode_select, layer_checkboxes),
+                pn.bind(
+                    make_echogram,
+                    x_mode_select,
+                    y_mode_select,
+                    layer_checkboxes,
+                ),
                 width=width,
                 height=height,
                 sizing_mode="fixed",
@@ -315,7 +320,11 @@ class PickAccessor:
             ]
         else:
             echogram_pane = pn.pane.HoloViews(
-                pn.bind(make_echogram, x_mode_select, y_mode_select),
+                pn.bind(
+                    make_echogram,
+                    x_mode_select,
+                    y_mode_select,
+                ),
                 width=width,
                 height=height,
                 sizing_mode="fixed",
