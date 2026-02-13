@@ -65,46 +65,7 @@ picker.to_csv("picks.csv")  # Export
 
 ## Contributing
 
-1. Clone the repository: `git clone https://github.com/developmentseed/xopr-viewer.git`
-2. Install development dependencies: `uv sync --all-groups`
-3. Run the test suite: `uv run --group dev pytest`
-4. Generate an HTML coverage report:
-
-```bash
-uv run --group dev pytest --cov=xopr_viewer --cov-report=html
-```
-
-The report will be generated in the `htmlcov/` directory. Open `htmlcov/index.html` in a browser to view it.
-
-### Code standards - using prek
-
-All code must conform to the PEP8 standard. Regarding line length, lines up to 100 characters are allowed, although please try to keep under 90 wherever possible.
-
-`xopr-viewer` uses a set of git hooks managed by [`prek`](https://github.com/j178/prek), a fast, Rust-based pre-commit hook manager that is fully compatible with `.pre-commit-config.yaml` files. `prek` can be installed locally by running:
-
-```bash
-uv tool install prek
-```
-
-or:
-
-```bash
-pip install prek
-```
-
-The hooks can be installed locally by running:
-
-```bash
-prek install
-```
-
-This would run the checks every time a commit is created locally. The checks will by default only run on the files modified by a commit, but the checks can be triggered for all the files by running:
-
-```bash
-prek run --all-files
-```
-
-If you would like to skip the failing checks and push the code for further discussion, use the `--no-verify` option with `git commit`.
+See the [Contributing Guide](contributing.md) for development setup, architecture overview, and how the components work.
 
 ## License
 
