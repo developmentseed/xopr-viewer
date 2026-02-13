@@ -191,7 +191,7 @@ def _create_image(
         elif y_mode == "range_bin":
             if "twtt" in da.dims:
                 da = da.assign_coords(
-                    range_bin=("twtt", np.arange(len(da.coords["twtt"])))
+                    range_bin=("twtt", np.arange(len(da.coords["twtt"]), dtype=float))
                 )
                 da = da.swap_dims({"twtt": "range_bin"})
         elif y_mode == "range":
@@ -204,7 +204,7 @@ def _create_image(
     if x_mode == "rangeline":
         if "slow_time" in da.dims:
             da = da.assign_coords(
-                trace=("slow_time", np.arange(len(da.coords["slow_time"])))
+                trace=("slow_time", np.arange(len(da.coords["slow_time"]), dtype=float))
             )
             da = da.swap_dims({"slow_time": "trace"})
     elif x_mode == "gps_time":
