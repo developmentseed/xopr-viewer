@@ -183,7 +183,7 @@ class PickAccessor:
             image = image.opts(
                 width=width,
                 height=height,
-                tools=["tap"],
+                tools=["tap", "hover"],
                 active_tools=["tap"],
             )
 
@@ -286,7 +286,12 @@ class PickAccessor:
                 )
 
             echogram_pane = pn.pane.HoloViews(
-                pn.bind(make_echogram, x_mode_select, y_mode_select, layer_checkboxes),
+                pn.bind(
+                    make_echogram,
+                    x_mode_select,
+                    y_mode_select,
+                    layer_checkboxes,
+                ),
                 width=width,
                 height=height,
                 sizing_mode="fixed",
@@ -315,7 +320,11 @@ class PickAccessor:
             ]
         else:
             echogram_pane = pn.pane.HoloViews(
-                pn.bind(make_echogram, x_mode_select, y_mode_select),
+                pn.bind(
+                    make_echogram,
+                    x_mode_select,
+                    y_mode_select,
+                ),
                 width=width,
                 height=height,
                 sizing_mode="fixed",
@@ -341,9 +350,12 @@ class PickAccessor:
 
         undo_btn = pn.widgets.Button(name="Undo", button_type="warning", width=80)
         clear_btn = pn.widgets.Button(name="Clear", button_type="danger", width=80)
-        export_input = pn.widgets.TextInput(
-            value=f"{ds.attrs.get('granule', 'picks')}.csv", width=200
-        )
+        segment = ds.attrs.get("segment_path", "")
+        if isinstance(segment, set):
+            segment = sorted(segment)[0] if segment else ""
+        default_csv = f"{segment}_picks.csv" if segment else "picks.csv"
+
+        export_input = pn.widgets.TextInput(value=default_csv, width=200)
         export_btn = pn.widgets.Button(name="Export", button_type="primary", width=80)
 
         undo_btn.on_click(lambda e: picker.undo())

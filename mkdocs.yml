@@ -13,6 +13,7 @@ extra:
 nav:
   - "index.md"
   - "Demo": "notebooks/grounding_line_picker_demo.ipynb"
+  - "Contributing": "contributing.md"
   - "API":
       - Picker: "api/picker.md"
       - Accessor: "api/accessor.md"

@@ -11,14 +11,12 @@ dependencies = [
     "hvplot>=0.12.2",
     "jupyter-bokeh>=4.0.5",
     "pandas>=2.0,<3.0",
-    "ruff>=0.14.14",
+    "xopr>=0.4.3",
 ]
 
 [project.optional-dependencies]
-xopr = ["xopr>=0.3.0"]
 notebook = [
     "notebook>=7.0.0",
-    "jupyterlab_execute_time>=3.3.0",
 ]
 [build-system]
 requires = ["uv_build>=0.9.5,<0.10.0"]
@@ -31,6 +29,7 @@ dev = [
     "pyinstrument>=5.1.2",
     "pytest>=8.0.0",
     "pytest-cov>=6.0.0",
+    "ruff>=0.14.14",
 ]
 docs = [
     "mkdocs>=1.6.1",
@@ -39,6 +38,7 @@ docs = [
     "mkdocstrings>=0.29.1",
     "mkdocstrings-python>=1.16.10",
     "ruff>=0.14.14",
+    "jupyterlab_execute_time>=3.3.0",
 ]
 
 [tool.ruff]
