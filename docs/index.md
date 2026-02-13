@@ -12,16 +12,14 @@ Interactive tools for viewing and labeling ground lines in radar echogram data, 
 ## Installation
 
 ```bash
-pip install "xopr-viewer[xopr] @ git+https://github.com/developmentseed/xopr-viewer.git"
+pip install "xopr-viewer @ git+https://github.com/developmentseed/xopr-viewer.git"
 ```
 
 or
 
 ```bash
-uv add "xopr-viewer[xopr] @ git+https://github.com/developmentseed/xopr-viewer.git"
+uv add "xopr-viewer @ git+https://github.com/developmentseed/xopr-viewer.git"
 ```
-
-Omit `[xopr]` if you only need the viewer without xopr integration.
 
 ## Quick Start
 
